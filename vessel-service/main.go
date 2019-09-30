@@ -1,71 +1,58 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"log"
-	pb "microservices/vessel-service/proto/vessel"
 	"net"
+	"os"
 
+	pb "go-microservices/vessel-service/proto/vessel"
+
+	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 const (
-	port = ":50052"
+	port        = ":50052"
+	defaultHost = "mongodb://localhost:27017"
 )
 
-type IRepository interface {
-	FindAvailable(*pb.Specification) (*pb.Vessel, error)
-}
-
-type Repository struct {
-	vessels []*pb.Vessel
-}
-
-func (repo *Repository) FindAvailable(spec *pb.Specification) (*pb.Vessel, error) {
-	for _, vessel := range repo.vessels {
-		if spec.Capacity <= vessel.Capacity && spec.MaxWeight <= vessel.MaxWeight {
-			return vessel, nil
-		}
-	}
-	return nil, errors.New("No vessel found by that spec")
-}
-
-type service struct {
-	repo IRepository
-}
-
-func (s *service) FindAvailable(ctx context.Context, req *pb.Specification) (*pb.Response, error) {
-
-	// Find the next available vessel
-	vessel, err := s.repo.FindAvailable(req)
-	if err != nil {
-		return nil, err
+func createDummyVesselData(repo Repository) {
+	log.Println("In createDummyVesselData")
+	vessels := []*pb.Vessel{
+		{Id: "vessel001", Name: "Kane's Salty Secret", MaxWeight: 200000, Capacity: 500},
 	}
 
-	// Set the vessel as part of the response message type
-	return &pb.Response{Vessel: vessel}, nil
+	for _, v := range vessels {
+		repo.Create(v)
+	}
 }
 
 func main() {
-	vessels := []*pb.Vessel{
-		&pb.Vessel{Id: "vessel001", Name: "Boaty McBoatface", MaxWeight: 200000, Capacity: 500},
-	}
 
-	repo := &Repository{vessels}
-
-	// Set-up our gRPC server.
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 	s := grpc.NewServer()
 
-	// Register our service with the gRPC server, this will tie our
-	// implementation into the auto-generated interface code for our
-	// protobuf definition.
-	pb.RegisterVesselServiceServer(s, &service{repo})
+	uri := os.Getenv("DB_HOST")
+	if uri == "" {
+		uri = defaultHost
+	}
+	client, err := CreateClient(uri)
+	if err != nil {
+		log.Panic(err)
+	}
+
+	defer client.Disconnect(context.TODO())
+
+	vesselCollection := client.Database("shippy").Collection("vessels")
+
+	repository := &VesselRepository{vesselCollection}
+	createDummyVesselData(repository)
+
+	pb.RegisterVesselServiceServer(s, &handler{repository})
 
 	// Register reflection service on gRPC server.
 	reflection.Register(s)
